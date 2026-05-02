@@ -53,7 +53,7 @@ const progressSteps = [
   'Opening pull request',
 ]
 
-const githubRepoUrlPattern = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/?$/i
+const githubRepoUrlPattern = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+(?:\.git)?\/?$/i
 
 export default function HomePage() {
   const [repoUrl, setRepoUrl] = useState('')
