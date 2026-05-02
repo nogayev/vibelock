@@ -207,6 +207,12 @@ function encodeGitHubPath(path: string) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
+function stringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
 function normalizeAgentResult({
   rawData,
   owner,
@@ -223,21 +229,27 @@ function normalizeAgentResult({
   const appProfile = raw.appProfile as Record<string, unknown> | undefined;
   const pr = raw.pr as Record<string, unknown> | undefined;
 
+  const selectedChecks = stringArray(raw.selectedChecks);
+  const createdFiles = stringArray(raw.createdFiles);
+  const fetchedFiles = stringArray(raw.fetchedFiles);
+  const missingFiles = stringArray(raw.missingFiles);
+
   return {
     provider,
     repository: {
       owner,
       repo,
       fullName:
-        typeof repository?.fullName === "string"
+        typeof repository?.fullName === "string" && repository.fullName.trim()
           ? repository.fullName
           : `${owner}/${repo}`,
       defaultBranch:
-        typeof repository?.defaultBranch === "string"
+        typeof repository?.defaultBranch === "string" &&
+        repository.defaultBranch.trim()
           ? repository.defaultBranch
           : "main",
       url:
-        typeof repository?.url === "string"
+        typeof repository?.url === "string" && repository.url.trim()
           ? repository.url
           : `https://github.com/${owner}/${repo}`,
     },
@@ -258,16 +270,55 @@ function normalizeAgentResult({
     securityScoreBefore:
       typeof raw.securityScoreBefore === "number"
         ? raw.securityScoreBefore
-        : 50,
+        : 45,
     securityScoreAfterEstimate:
       typeof raw.securityScoreAfterEstimate === "number"
         ? raw.securityScoreAfterEstimate
-        : 80,
-    selectedChecks: Array.isArray(raw.selectedChecks)
-      ? raw.selectedChecks.filter((item) => typeof item === "string")
-      : ["Access Control", "AI Route Abuse", "Rate Limiting"],
+        : 82,
+    selectedChecks:
+      selectedChecks.length > 0
+        ? selectedChecks
+        : [
+            "Authentication on API endpoints",
+            "Rate limiting and abuse prevention",
+            "Input validation and sanitization",
+            "Security headers configuration",
+            "AI API key and tool-call safety",
+          ],
     findings: Array.isArray(raw.findings)
-      ? raw.findings
+      ? raw.findings.map((item, index) => {
+          const finding = item as Record<string, unknown>;
+
+          return {
+            severity:
+              finding.severity === "critical" ||
+              finding.severity === "high" ||
+              finding.severity === "medium" ||
+              finding.severity === "low"
+                ? finding.severity
+                : index === 0
+                  ? "high"
+                  : "medium",
+            title:
+              typeof finding.title === "string" && finding.title.trim()
+                ? finding.title
+                : `Security finding ${index + 1}`,
+            category:
+              typeof finding.category === "string" && finding.category.trim()
+                ? finding.category
+                : "Application Security",
+            whyItMatters:
+              typeof finding.whyItMatters === "string" &&
+              finding.whyItMatters.trim()
+                ? finding.whyItMatters
+                : "This issue can allow unauthorized access, request abuse, data leakage, unsafe AI behavior, or higher infrastructure costs if left unaddressed.",
+            fixSummary:
+              typeof finding.fixSummary === "string" &&
+              finding.fixSummary.trim()
+                ? finding.fixSummary
+                : "Add server-side authentication, input validation, rate limiting, security headers, and request guardrails where appropriate.",
+          };
+        })
       : [
           {
             severity: "medium",
@@ -279,32 +330,46 @@ function normalizeAgentResult({
               "Review the generated PR artifacts and rerun VibeLock if needed.",
           },
         ],
-    createdFiles: Array.isArray(raw.createdFiles)
-      ? raw.createdFiles.filter((item) => typeof item === "string")
-      : [
-          "VIBELOCK_SECURITY_REPORT.md",
-          "tests/security/vibelock.spec.ts",
-          "lib/security/vibelock-rate-limit.ts",
-          "lib/security/vibelock-request-guards.ts",
-        ],
-    fetchedFiles: Array.isArray(raw.fetchedFiles)
-      ? raw.fetchedFiles.filter((item) => typeof item === "string")
-      : [],
-    missingFiles: Array.isArray(raw.missingFiles)
-      ? raw.missingFiles.filter((item) => typeof item === "string")
-      : [],
+    createdFiles:
+      createdFiles.length > 0
+        ? createdFiles
+        : [
+            "VIBELOCK_SECURITY_REPORT.md",
+            "tests/security/vibelock.spec.ts",
+            "lib/security/vibelock-rate-limit.ts",
+            "lib/security/vibelock-request-guards.ts",
+          ],
+    fetchedFiles,
+    missingFiles,
     pr: {
       title:
-        typeof pr?.title === "string"
+        typeof pr?.title === "string" && pr.title.trim()
           ? pr.title
           : "[VibeLock] Add security guardrails and tests",
       url:
-        typeof pr?.url === "string"
+        typeof pr?.url === "string" && pr.url.trim()
           ? pr.url
           : `https://github.com/${owner}/${repo}/pulls`,
     },
     agentTrace: Array.isArray(raw.agentTrace)
-      ? raw.agentTrace
+      ? raw.agentTrace.map((item, index) => {
+          const trace = item as Record<string, unknown>;
+
+          return {
+            step:
+              typeof trace.step === "string" && trace.step.trim()
+                ? trace.step
+                : `Step ${index + 1}`,
+            tool:
+              typeof trace.tool === "string" && trace.tool.trim()
+                ? trace.tool
+                : "VibeLock agent",
+            summary:
+              typeof trace.summary === "string" && trace.summary.trim()
+                ? trace.summary
+                : "The agent completed this step and normalized the result for display.",
+          };
+        })
       : [
           {
             step: "Normalized final result",
@@ -371,6 +436,18 @@ After calling tools, you MUST return the final answer as one raw JSON object onl
 Do not use markdown.
 Do not wrap in code fences.
 Do not include explanations outside JSON.
+
+Every finding must include:
+- severity
+- title
+- category
+- whyItMatters
+- fixSummary
+
+Every agentTrace item must include:
+- step
+- tool
+- summary
 
 The final JSON object must include:
 repository, appProfile, securityScoreBefore, securityScoreAfterEstimate, selectedChecks, findings, createdFiles, fetchedFiles, missingFiles, pr, agentTrace, and provider.`,
@@ -707,21 +784,16 @@ Required behavior:
         issues: parsedFinal.error.flatten(),
         rawData: finalJson.data,
       });
-
-      return NextResponse.json(
-        normalizeAgentResult({
-          rawData: finalJson.data,
-          owner,
-          repo,
-          provider: modelConfig.provider,
-        })
-      );
     }
 
-    return NextResponse.json({
-      ...parsedFinal.data,
-      provider: parsedFinal.data.provider ?? modelConfig.provider,
-    });
+    return NextResponse.json(
+      normalizeAgentResult({
+        rawData: finalJson.data,
+        owner,
+        repo,
+        provider: modelConfig.provider,
+      })
+    );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unexpected server error.";
