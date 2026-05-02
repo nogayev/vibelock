@@ -1,3 +1,27 @@
+# VibeLock
+
+VibeLock is a security PR agent for vibe-coded apps.
+
+It inspects a GitHub repository, detects the app/security profile, chooses relevant OWASP and AI-app security checks, generates security guardrail files, and opens a reviewable GitHub pull request.
+
+## Demo flow
+
+1. Paste a GitHub repo URL.
+2. Paste a GitHub token with Contents and Pull Requests write access.
+3. VibeLock fetches repo files using server-side tools.
+4. The AI SDK agent reasons over the repo and generates findings.
+5. The agent creates security files and opens a pull request.
+
+## Stack
+
+- Next.js
+- Vercel
+- Vercel AI SDK tool-calling agent
+- OpenAI fallback provider
+- GitHub REST API tools
+- Tailwind CSS
+
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
