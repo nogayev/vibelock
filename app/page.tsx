@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 
-type Severity = 'high' | 'medium' | 'low'
+type Severity = 'critical' | 'high' | 'medium' | 'low'
 
 type Finding = {
   severity: Severity
@@ -13,6 +13,13 @@ type Finding = {
 }
 
 type RunVibeLockResponse = {
+  repository: {
+    owner: string
+    repo: string
+    fullName: string
+    defaultBranch: string
+    url: string
+  }
   appProfile: {
     framework: string
     hasAuth: boolean
@@ -29,6 +36,9 @@ type RunVibeLockResponse = {
   selectedChecks: string[]
   findings: Finding[]
   createdFiles: string[]
+  fetchedFiles: string[]
+  missingFiles: string[]
+  agentTrace: { step: string; tool: string; summary: string }[]
   pr?: {
     title: string
     url: string
@@ -61,6 +71,7 @@ export default function HomePage() {
     high: 'border-rose-400/40 bg-rose-500/10 text-rose-200',
     medium: 'border-amber-400/40 bg-amber-500/10 text-amber-200',
     low: 'border-sky-400/40 bg-sky-500/10 text-sky-200',
+    critical: 'border-fuchsia-400/40 bg-fuchsia-500/10 text-fuchsia-200',
   }
 
   const handleRun = async () => {
@@ -248,7 +259,12 @@ export default function HomePage() {
                   </div>
                 </div>
 
+                
                 <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Repository</p>
+                  <p className="mt-2 text-sm text-slate-100">{result.repository.fullName} ({result.repository.defaultBranch})</p>
+                </div>
+<div className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-4">
                   <p className="text-xs uppercase tracking-wide text-slate-400">Selected Checks</p>
                   <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
                     {result.selectedChecks.map((check) => (
@@ -281,6 +297,23 @@ export default function HomePage() {
                       <li key={filePath}>{filePath}</li>
                     ))}
                   </ul>
+                </div>
+
+                
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-lg border border-slate-700 bg-slate-950 p-4">
+                    <p className="text-xs uppercase tracking-wide text-slate-400">Fetched Files</p>
+                    <ul className="mt-2 space-y-1 font-mono text-xs text-slate-200">{result.fetchedFiles.map((f)=><li key={f}>{f}</li>)}</ul>
+                  </div>
+                  <div className="rounded-lg border border-slate-700 bg-slate-950 p-4">
+                    <p className="text-xs uppercase tracking-wide text-slate-400">Missing Files</p>
+                    <ul className="mt-2 space-y-1 font-mono text-xs text-slate-200">{result.missingFiles.map((f)=><li key={f}>{f}</li>)}</ul>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Agent Trace</p>
+                  <ul className="mt-2 space-y-2 text-sm text-slate-200">{result.agentTrace.map((t,i)=><li key={`${t.step}-${i}`}>{t.step} · {t.tool} — {t.summary}</li>)}</ul>
                 </div>
 
                 {result.pr?.url && (
