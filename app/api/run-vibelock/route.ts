@@ -7,9 +7,45 @@ type AiSdkModule = {
   tool: <T extends { inputSchema: z.ZodTypeAny; execute: (...args: never[]) => Promise<unknown> }>(definition: T) => T;
 };
 
+type OpenAiSdkModule = {
+  openai: (modelId: string) => unknown;
+};
+
 async function loadAiSdk(): Promise<AiSdkModule> {
   const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<AiSdkModule>;
   return dynamicImport('ai');
+}
+
+async function loadOpenAiSdk(): Promise<OpenAiSdkModule> {
+  const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<OpenAiSdkModule>;
+  return dynamicImport('@ai-sdk/openai');
+}
+
+function getModelConfig() {
+  const provider = process.env.VIBELOCK_MODEL_PROVIDER;
+  const hasOpenAi = Boolean(process.env.OPENAI_API_KEY);
+  const hasGateway = Boolean(process.env.AI_GATEWAY_API_KEY);
+
+  if (provider === "openai") {
+    if (!hasOpenAi) return { error: "Missing OPENAI_API_KEY. Add it to your environment before running the VibeLock agent." };
+    return { provider: "openai" as const };
+  }
+
+  if (provider === "gateway") {
+    if (!hasGateway) return { error: "Missing AI_GATEWAY_API_KEY. Add it to your environment before running the VibeLock agent." };
+    return { provider: "gateway" as const };
+  }
+
+  if (!provider) {
+    if (hasOpenAi) return { provider: "openai" as const };
+    if (hasGateway) return { provider: "gateway" as const };
+    return {
+      error:
+        "Missing model provider key. Add OPENAI_API_KEY for OpenAI fallback or AI_GATEWAY_API_KEY for Vercel AI Gateway.",
+    };
+  }
+
+  return { error: `Unsupported VIBELOCK_MODEL_PROVIDER value: ${provider}` };
 }
 
 const requestSchema = z.object({
@@ -48,8 +84,9 @@ const finalSchema = z.object({
 
 export async function POST(request: Request) {
   try {
-    if (!process.env.AI_GATEWAY_API_KEY) {
-      return NextResponse.json({ error: "Missing AI_GATEWAY_API_KEY. Add it to your environment before running the VibeLock agent." }, { status: 400 });
+    const modelConfig = getModelConfig();
+    if ("error" in modelConfig) {
+      return NextResponse.json({ error: modelConfig.error }, { status: 400 });
     }
 
     const parsedBody = requestSchema.safeParse(await request.json());
@@ -63,8 +100,13 @@ export async function POST(request: Request) {
 
     const { generateText, stepCountIs, tool } = await loadAiSdk();
 
+    const model =
+      modelConfig.provider === "openai"
+        ? (await loadOpenAiSdk()).openai("gpt-4.1-mini")
+        : "anthropic/claude-sonnet-4-6";
+
     const { text } = await generateText({
-      model: "anthropic/claude-sonnet-4-6",
+      model,
       stopWhen: stepCountIs(6),
       system:
         "You are VibeLock, a security PR agent for vibe-coded apps. Your job is to inspect the GitHub repo using tools, infer what kind of app it is, choose only relevant OWASP and AI-app security checks, generate security findings, write security guardrail files, and open a reviewable pull request. You must not claim the app is fully secure. You must create reviewable security improvements and tests. Use the available tools. Return only valid JSON in your final answer.",
