@@ -2,6 +2,39 @@
 
 import { useMemo, useState } from 'react'
 
+type Severity = 'high' | 'medium' | 'low'
+
+type Finding = {
+  severity: Severity
+  title: string
+  category: string
+  whyItMatters: string
+  fixSummary: string
+}
+
+type RunVibeLockResponse = {
+  appProfile: {
+    framework: string
+    hasAuth: boolean
+    hasAIChat: boolean
+    hasAgentTools: boolean
+    hasMCP: boolean
+    hasPayments: boolean
+    hasFileUploads: boolean
+    hasDatabase: boolean
+    hasAdmin: boolean
+  }
+  securityScoreBefore: number
+  securityScoreAfterEstimate: number
+  selectedChecks: string[]
+  findings: Finding[]
+  createdFiles: string[]
+  pr?: {
+    title: string
+    url: string
+  }
+}
+
 const progressSteps = [
   'Fetching repository',
   'Detecting app type',
@@ -11,31 +44,86 @@ const progressSteps = [
   'Opening pull request',
 ]
 
+const githubRepoUrlPattern = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/?$/i
+
 export default function HomePage() {
   const [repoUrl, setRepoUrl] = useState('')
   const [githubToken, setGithubToken] = useState('')
   const [projectDescription, setProjectDescription] = useState('')
   const [currentStep, setCurrentStep] = useState(-1)
   const [isRunning, setIsRunning] = useState(false)
-  const [hasCompletedRun, setHasCompletedRun] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
+  const [result, setResult] = useState<RunVibeLockResponse | null>(null)
 
   const completedSteps = useMemo(() => currentStep + 1, [currentStep])
+
+  const severityClasses: Record<Severity, string> = {
+    high: 'border-rose-400/40 bg-rose-500/10 text-rose-200',
+    medium: 'border-amber-400/40 bg-amber-500/10 text-amber-200',
+    low: 'border-sky-400/40 bg-sky-500/10 text-sky-200',
+  }
 
   const handleRun = async () => {
     if (isRunning) return
 
-    setIsRunning(true)
-    setHasCompletedRun(false)
-    setCurrentStep(-1)
+    const repo = repoUrl.trim()
+    const token = githubToken.trim()
 
-    for (let i = 0; i < progressSteps.length; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 700))
-      setCurrentStep(i)
+    if (!repo) {
+      setErrorMessage('Repository URL is required.')
+      return
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 350))
-    setHasCompletedRun(true)
-    setIsRunning(false)
+    if (!token) {
+      setErrorMessage('GitHub token is required.')
+      return
+    }
+
+    if (!githubRepoUrlPattern.test(repo)) {
+      setErrorMessage('Repository URL must look like https://github.com/owner/repo.')
+      return
+    }
+
+    setErrorMessage('')
+    setResult(null)
+    setIsRunning(true)
+    setCurrentStep(0)
+
+    const intervalId = window.setInterval(() => {
+      setCurrentStep((prev) => {
+        if (prev >= progressSteps.length - 1) {
+          return prev
+        }
+
+        return prev + 1
+      })
+    }, 500)
+
+    try {
+      const response = await fetch('/api/run-vibelock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoUrl: repo,
+          githubToken: token,
+          description: projectDescription,
+        }),
+      })
+
+      const data = (await response.json()) as RunVibeLockResponse & { error?: string }
+
+      if (!response.ok) {
+        throw new Error(data.error ?? 'Failed to run VibeLock.')
+      }
+
+      setCurrentStep(progressSteps.length - 1)
+      setResult(data)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unexpected error while running VibeLock.')
+    } finally {
+      window.clearInterval(intervalId)
+      setIsRunning(false)
+    }
   }
 
   return (
@@ -48,9 +136,6 @@ export default function HomePage() {
           <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
             Secure vibe-coded apps before attackers find the cracks.
           </h1>
-          <p className="max-w-3xl text-sm leading-6 text-slate-300 sm:text-base">
-            Connect a GitHub repository, run automated security profiling, and prepare a pull request with hardening files designed for AI-generated applications.
-          </p>
         </header>
 
         <section className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
@@ -92,6 +177,12 @@ export default function HomePage() {
               </label>
             </div>
 
+            {errorMessage && (
+              <div className="mt-4 rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+                {errorMessage}
+              </div>
+            )}
+
             <button
               onClick={handleRun}
               disabled={isRunning}
@@ -122,7 +213,11 @@ export default function HomePage() {
                     >
                       <span
                         className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold ${
-                          isDone ? 'bg-emerald-400 text-slate-950' : isActive ? 'bg-cyan-400 text-slate-950' : 'bg-slate-700 text-slate-300'
+                          isDone
+                            ? 'bg-emerald-400 text-slate-950'
+                            : isActive
+                              ? 'bg-cyan-400 text-slate-950'
+                              : 'bg-slate-700 text-slate-300'
                         }`}
                       >
                         {isDone ? '✓' : index + 1}
@@ -134,33 +229,70 @@ export default function HomePage() {
               </ol>
             </div>
 
-            {hasCompletedRun && (
+            {result && (
               <div className="rounded-2xl border border-cyan-400/30 bg-slate-900/80 p-6 shadow-xl shadow-black/20">
-                <h2 className="mb-4 text-lg font-medium text-white">Demo Findings Snapshot</h2>
+                <h2 className="mb-4 text-lg font-medium text-white">Analysis Results</h2>
+
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div className="rounded-lg border border-slate-700 bg-slate-950 p-3">
                     <p className="text-xs uppercase tracking-wide text-slate-400">Detected Profile</p>
-                    <p className="mt-1 text-sm font-semibold text-cyan-300">AI SaaS App</p>
+                    <p className="mt-1 text-sm font-semibold text-cyan-300">{result.appProfile.framework.toUpperCase()} App</p>
                   </div>
                   <div className="rounded-lg border border-slate-700 bg-slate-950 p-3">
                     <p className="text-xs uppercase tracking-wide text-slate-400">Before Score</p>
-                    <p className="mt-1 text-sm font-semibold text-rose-300">42/100</p>
+                    <p className="mt-1 text-sm font-semibold text-rose-300">{result.securityScoreBefore}/100</p>
                   </div>
                   <div className="rounded-lg border border-slate-700 bg-slate-950 p-3">
                     <p className="text-xs uppercase tracking-wide text-slate-400">After Estimate</p>
-                    <p className="mt-1 text-sm font-semibold text-emerald-300">86/100</p>
+                    <p className="mt-1 text-sm font-semibold text-emerald-300">{result.securityScoreAfterEstimate}/100</p>
                   </div>
                 </div>
 
                 <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-4">
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Example Findings</p>
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Selected Checks</p>
                   <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
-                    <li>AI route has no authentication guard</li>
-                    <li>No rate limiting on model calls</li>
-                    <li>Missing security tests for protected routes</li>
-                    <li>No documented environment variable policy</li>
+                    {result.selectedChecks.map((check) => (
+                      <li key={check}>{check}</li>
+                    ))}
                   </ul>
                 </div>
+
+                <div className="mt-4 space-y-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Findings</p>
+                  {result.findings.map((finding) => (
+                    <article key={finding.title} className="rounded-lg border border-slate-700 bg-slate-950 p-4">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold text-white">{finding.title}</h3>
+                        <span className={`rounded-full border px-2 py-1 text-xs font-medium uppercase ${severityClasses[finding.severity]}`}>
+                          {finding.severity}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400">Category: {finding.category}</p>
+                      <p className="mt-2 text-sm text-slate-200">{finding.whyItMatters}</p>
+                      <p className="mt-2 text-sm text-cyan-200">Fix: {finding.fixSummary}</p>
+                    </article>
+                  ))}
+                </div>
+
+                <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Created Files</p>
+                  <ul className="mt-2 space-y-1 font-mono text-xs text-slate-200">
+                    {result.createdFiles.map((filePath) => (
+                      <li key={filePath}>{filePath}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                {result.pr?.url && (
+                  <a
+                    href={result.pr.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-4 inline-flex items-center rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:bg-cyan-500/20"
+                  >
+                    View Pull Request: {result.pr.title}
+                  </a>
+                )}
               </div>
             )}
           </div>
