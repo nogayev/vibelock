@@ -1,50 +1,11 @@
+import { generateText, stepCountIs, tool } from "ai";
+import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import { NextResponse } from "next/server";
-
-type ToolDefinition<TInput, TResult> = {
-  inputSchema: z.ZodType<TInput>;
-  execute: (args: TInput) => Promise<TResult> | TResult;
-};
-
-type AiSdkModule = {
-  generateText: (args: {
-    model: unknown;
-    stopWhen: unknown;
-    system: string;
-    prompt: string;
-    tools: Record<string, unknown>;
-  }) => Promise<{ text: string }>;
-  stepCountIs: (steps: number) => unknown;
-  tool: <TInput, TResult>(
-    definition: ToolDefinition<TInput, TResult>
-  ) => unknown;
-};
-
-type OpenAiSdkModule = {
-  openai: (modelId: string) => unknown;
-};
 
 type SafeParseAgentJsonResult =
   | { ok: true; data: unknown }
   | { ok: false; details: string; rawModelTextPreview: string };
-
-async function loadAiSdk(): Promise<AiSdkModule> {
-  const dynamicImport = new Function(
-    "specifier",
-    "return import(specifier)"
-  ) as (specifier: string) => Promise<AiSdkModule>;
-
-  return dynamicImport("ai");
-}
-
-async function loadOpenAiSdk(): Promise<OpenAiSdkModule> {
-  const dynamicImport = new Function(
-    "specifier",
-    "return import(specifier)"
-  ) as (specifier: string) => Promise<OpenAiSdkModule>;
-
-  return dynamicImport("@ai-sdk/openai");
-}
 
 function getModelConfig() {
   const provider = process.env.VIBELOCK_MODEL_PROVIDER;
@@ -246,6 +207,115 @@ function encodeGitHubPath(path: string) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
+function normalizeAgentResult({
+  rawData,
+  owner,
+  repo,
+  provider,
+}: {
+  rawData: unknown;
+  owner: string;
+  repo: string;
+  provider: "openai" | "gateway";
+}) {
+  const raw = rawData as Record<string, unknown>;
+  const repository = raw.repository as Record<string, unknown> | undefined;
+  const appProfile = raw.appProfile as Record<string, unknown> | undefined;
+  const pr = raw.pr as Record<string, unknown> | undefined;
+
+  return {
+    provider,
+    repository: {
+      owner,
+      repo,
+      fullName:
+        typeof repository?.fullName === "string"
+          ? repository.fullName
+          : `${owner}/${repo}`,
+      defaultBranch:
+        typeof repository?.defaultBranch === "string"
+          ? repository.defaultBranch
+          : "main",
+      url:
+        typeof repository?.url === "string"
+          ? repository.url
+          : `https://github.com/${owner}/${repo}`,
+    },
+    appProfile: {
+      framework:
+        appProfile?.framework === "react" || appProfile?.framework === "nextjs"
+          ? appProfile.framework
+          : "unknown",
+      hasAuth: Boolean(appProfile?.hasAuth),
+      hasAIChat: Boolean(appProfile?.hasAIChat),
+      hasAgentTools: Boolean(appProfile?.hasAgentTools),
+      hasMCP: Boolean(appProfile?.hasMCP),
+      hasPayments: Boolean(appProfile?.hasPayments),
+      hasFileUploads: Boolean(appProfile?.hasFileUploads),
+      hasDatabase: Boolean(appProfile?.hasDatabase),
+      hasAdmin: Boolean(appProfile?.hasAdmin),
+    },
+    securityScoreBefore:
+      typeof raw.securityScoreBefore === "number"
+        ? raw.securityScoreBefore
+        : 50,
+    securityScoreAfterEstimate:
+      typeof raw.securityScoreAfterEstimate === "number"
+        ? raw.securityScoreAfterEstimate
+        : 80,
+    selectedChecks: Array.isArray(raw.selectedChecks)
+      ? raw.selectedChecks.filter((item) => typeof item === "string")
+      : ["Access Control", "AI Route Abuse", "Rate Limiting"],
+    findings: Array.isArray(raw.findings)
+      ? raw.findings
+      : [
+          {
+            severity: "medium",
+            title: "Agent returned partial security findings",
+            category: "Agent Output",
+            whyItMatters:
+              "The agent completed its run but returned a result that needed normalization.",
+            fixSummary:
+              "Review the generated PR artifacts and rerun VibeLock if needed.",
+          },
+        ],
+    createdFiles: Array.isArray(raw.createdFiles)
+      ? raw.createdFiles.filter((item) => typeof item === "string")
+      : [
+          "VIBELOCK_SECURITY_REPORT.md",
+          "tests/security/vibelock.spec.ts",
+          "lib/security/vibelock-rate-limit.ts",
+          "lib/security/vibelock-request-guards.ts",
+        ],
+    fetchedFiles: Array.isArray(raw.fetchedFiles)
+      ? raw.fetchedFiles.filter((item) => typeof item === "string")
+      : [],
+    missingFiles: Array.isArray(raw.missingFiles)
+      ? raw.missingFiles.filter((item) => typeof item === "string")
+      : [],
+    pr: {
+      title:
+        typeof pr?.title === "string"
+          ? pr.title
+          : "[VibeLock] Add security guardrails and tests",
+      url:
+        typeof pr?.url === "string"
+          ? pr.url
+          : `https://github.com/${owner}/${repo}/pulls`,
+    },
+    agentTrace: Array.isArray(raw.agentTrace)
+      ? raw.agentTrace
+      : [
+          {
+            step: "Normalized final result",
+            tool: "safeParseAgentJson",
+            summary:
+              "The agent returned JSON, but VibeLock normalized the shape for display.",
+          },
+        ],
+  };
+}
+
 export async function POST(request: Request) {
   try {
     const modelConfig = getModelConfig();
@@ -276,12 +346,12 @@ export async function POST(request: Request) {
     const owner = match[1];
     const repo = match[2];
 
-    const { generateText, stepCountIs, tool } = await loadAiSdk();
-
     const model =
       modelConfig.provider === "openai"
-        ? (await loadOpenAiSdk()).openai("gpt-4.1-mini")
-        : "anthropic/claude-sonnet-4-6";
+        ? openai("gpt-4.1-mini")
+        : ("anthropic/claude-sonnet-4-6" as unknown as Parameters<
+            typeof generateText
+          >[0]["model"]);
 
     const { text } = await generateText({
       model,
@@ -412,13 +482,9 @@ Required behavior:
 
                 const data = (await res.json()) as {
                   content?: string;
-                  encoding?: string;
                 };
 
-                const decoded = Buffer.from(
-                  data.content ?? "",
-                  "base64"
-                )
+                const decoded = Buffer.from(data.content ?? "", "base64")
                   .toString("utf8")
                   .slice(0, 5000);
 
@@ -443,16 +509,175 @@ Required behavior:
             prTitle: z.string(),
             prBody: z.string(),
           }),
-          execute: async ({ owner, repo, prTitle }) => ({
-            title: prTitle,
-            url: `https://github.com/${owner}/${repo}/pull/1`,
-            createdFiles: [
-              "VIBELOCK_SECURITY_REPORT.md",
-              "tests/security/vibelock.spec.ts",
-              "lib/security/vibelock-rate-limit.ts",
-              "lib/security/vibelock-request-guards.ts",
-            ],
-          }),
+          execute: async ({
+            owner,
+            repo,
+            defaultBranch,
+            reportMarkdown,
+            testFile,
+            rateLimitHelper,
+            requestGuardsHelper,
+            prTitle,
+            prBody,
+          }) => {
+            const githubHeaders = {
+              Authorization: `Bearer ${githubToken}`,
+              Accept: "application/vnd.github+json",
+              "Content-Type": "application/json",
+            };
+
+            async function githubFetch(url: string, init?: RequestInit) {
+              const response = await fetch(url, {
+                ...init,
+                headers: {
+                  ...githubHeaders,
+                  ...(init?.headers ?? {}),
+                },
+              });
+
+              if (response.status === 401) {
+                throw new Error(
+                  "GitHub token is invalid or missing required permissions."
+                );
+              }
+
+              if (response.status === 403) {
+                throw new Error(
+                  "GitHub token does not have permission to create branches, write files, or open PRs."
+                );
+              }
+
+              if (response.status === 404) {
+                throw new Error(
+                  "Repository not found or token does not have access."
+                );
+              }
+
+              if (!response.ok) {
+                const body = await response.text();
+                throw new Error(
+                  `GitHub API request failed (${response.status}): ${body.slice(
+                    0,
+                    300
+                  )}`
+                );
+              }
+
+              return response.json();
+            }
+
+            const refData = (await githubFetch(
+              `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(
+                defaultBranch
+              )}`
+            )) as { object?: { sha?: string } };
+
+            const baseSha = refData.object?.sha;
+
+            if (!baseSha) {
+              throw new Error("Could not read the default branch SHA from GitHub.");
+            }
+
+            async function createBranch(suffix = ""): Promise<string> {
+              const branchName = `vibelock/security-fixes-${Date.now()}${suffix}`;
+
+              try {
+                await githubFetch(
+                  `https://api.github.com/repos/${owner}/${repo}/git/refs`,
+                  {
+                    method: "POST",
+                    body: JSON.stringify({
+                      ref: `refs/heads/${branchName}`,
+                      sha: baseSha,
+                    }),
+                  }
+                );
+
+                return branchName;
+              } catch (error) {
+                if (suffix) throw error;
+                return createBranch(
+                  `-${Math.random().toString(36).slice(2, 8)}`
+                );
+              }
+            }
+
+            const branchName = await createBranch();
+
+            const files = [
+              {
+                path: "VIBELOCK_SECURITY_REPORT.md",
+                content: reportMarkdown,
+              },
+              {
+                path: "tests/security/vibelock.spec.ts",
+                content: testFile,
+              },
+              {
+                path: "lib/security/vibelock-rate-limit.ts",
+                content: rateLimitHelper,
+              },
+              {
+                path: "lib/security/vibelock-request-guards.ts",
+                content: requestGuardsHelper,
+              },
+            ];
+
+            for (const file of files) {
+              const encodedPath = encodeGitHubPath(file.path);
+              let sha: string | undefined;
+
+              const existingResponse = await fetch(
+                `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(
+                  branchName
+                )}`,
+                { headers: githubHeaders }
+              );
+
+              if (existingResponse.ok) {
+                const existing = (await existingResponse.json()) as {
+                  sha?: string;
+                };
+                sha = existing.sha;
+              }
+
+              await githubFetch(
+                `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}`,
+                {
+                  method: "PUT",
+                  body: JSON.stringify({
+                    message: `[VibeLock] Add ${file.path}`,
+                    content: Buffer.from(file.content, "utf8").toString(
+                      "base64"
+                    ),
+                    branch: branchName,
+                    ...(sha ? { sha } : {}),
+                  }),
+                }
+              );
+            }
+
+            const pullRequest = (await githubFetch(
+              `https://api.github.com/repos/${owner}/${repo}/pulls`,
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  title: prTitle,
+                  head: branchName,
+                  base: defaultBranch,
+                  body: prBody,
+                }),
+              }
+            )) as { html_url?: string };
+
+            return {
+              title: prTitle,
+              url:
+                pullRequest.html_url ??
+                `https://github.com/${owner}/${repo}/pulls`,
+              createdFiles: files.map((file) => file.path),
+            };
+          },
         }),
       },
     });
@@ -483,103 +708,14 @@ Required behavior:
         rawData: finalJson.data,
       });
 
-      const raw = finalJson.data as Record<string, unknown>;
-      const repository = raw.repository as Record<string, unknown> | undefined;
-      const appProfile = raw.appProfile as Record<string, unknown> | undefined;
-      const pr = raw.pr as Record<string, unknown> | undefined;
-
-      return NextResponse.json({
-        provider: modelConfig.provider,
-        repository: {
+      return NextResponse.json(
+        normalizeAgentResult({
+          rawData: finalJson.data,
           owner,
           repo,
-          fullName:
-            typeof repository?.fullName === "string"
-              ? repository.fullName
-              : `${owner}/${repo}`,
-          defaultBranch:
-            typeof repository?.defaultBranch === "string"
-              ? repository.defaultBranch
-              : "main",
-          url:
-            typeof repository?.url === "string"
-              ? repository.url
-              : `https://github.com/${owner}/${repo}`,
-        },
-        appProfile: {
-          framework:
-            appProfile?.framework === "react" ||
-            appProfile?.framework === "nextjs"
-              ? appProfile.framework
-              : "unknown",
-          hasAuth: Boolean(appProfile?.hasAuth),
-          hasAIChat: Boolean(appProfile?.hasAIChat),
-          hasAgentTools: Boolean(appProfile?.hasAgentTools),
-          hasMCP: Boolean(appProfile?.hasMCP),
-          hasPayments: Boolean(appProfile?.hasPayments),
-          hasFileUploads: Boolean(appProfile?.hasFileUploads),
-          hasDatabase: Boolean(appProfile?.hasDatabase),
-          hasAdmin: Boolean(appProfile?.hasAdmin),
-        },
-        securityScoreBefore:
-          typeof raw.securityScoreBefore === "number"
-            ? raw.securityScoreBefore
-            : 50,
-        securityScoreAfterEstimate:
-          typeof raw.securityScoreAfterEstimate === "number"
-            ? raw.securityScoreAfterEstimate
-            : 80,
-        selectedChecks: Array.isArray(raw.selectedChecks)
-          ? raw.selectedChecks.filter((item) => typeof item === "string")
-          : ["Access Control", "AI Route Abuse", "Rate Limiting"],
-        findings: Array.isArray(raw.findings)
-          ? raw.findings
-          : [
-              {
-                severity: "medium",
-                title: "Agent returned partial security findings",
-                category: "Agent Output",
-                whyItMatters:
-                  "The agent completed its run but returned a result that needed normalization.",
-                fixSummary:
-                  "Review the generated PR artifacts and rerun VibeLock if needed.",
-              },
-            ],
-        createdFiles: Array.isArray(raw.createdFiles)
-          ? raw.createdFiles.filter((item) => typeof item === "string")
-          : [
-              "VIBELOCK_SECURITY_REPORT.md",
-              "tests/security/vibelock.spec.ts",
-              "lib/security/vibelock-rate-limit.ts",
-              "lib/security/vibelock-request-guards.ts",
-            ],
-        fetchedFiles: Array.isArray(raw.fetchedFiles)
-          ? raw.fetchedFiles.filter((item) => typeof item === "string")
-          : [],
-        missingFiles: Array.isArray(raw.missingFiles)
-          ? raw.missingFiles.filter((item) => typeof item === "string")
-          : [],
-        pr: {
-          title:
-            typeof pr?.title === "string"
-              ? pr.title
-              : "[VibeLock] Add security guardrails and tests",
-          url:
-            typeof pr?.url === "string"
-              ? pr.url
-              : `https://github.com/${owner}/${repo}/pull/1`,
-        },
-        agentTrace: Array.isArray(raw.agentTrace)
-          ? raw.agentTrace
-          : [
-              {
-                step: "Normalized final result",
-                tool: "safeParseAgentJson",
-                summary:
-                  "The agent returned JSON, but VibeLock normalized the shape for display.",
-              },
-            ],
-      });
+          provider: modelConfig.provider,
+        })
+      );
     }
 
     return NextResponse.json({
